@@ -1,0 +1,155 @@
+from typing import List, Optional
+import re
+
+from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+from docx.document import Document as _Document
+
+from app.services.parsing.base import BaseParser
+from app.services.chunking.models import Block
+
+
+def iter_block_items(parent):
+    """
+    按 Word 文档中的原始顺序遍历 paragraph 和 table
+    """
+    if isinstance(parent, _Document):
+        parent_elm = parent.element.body
+    else:
+        parent_elm = parent._element
+
+    for child in parent_elm.iterchildren():
+        if child.tag.endswith("}p"):
+            yield Paragraph(child, parent)
+        elif child.tag.endswith("}tbl"):
+            yield Table(child, parent)
+
+
+def detect_heading_level(text: str, style_name: str = "") -> Optional[int]:
+    """
+    综合样式名 + 文本模式 识别标题层级
+    返回:
+      1/2/3... 表示标题层级
+      None 表示普通正文
+    """
+    t = text.strip()
+    if not t:
+        return None
+
+    style_name = (style_name or "").lower()
+
+    # 1) 优先使用 Word 样式
+    if "heading" in style_name:
+        digits = "".join(c for c in style_name if c.isdigit())
+        return int(digits) if digits else 1
+
+    # 2) 中文制度/手册常见标题
+    if re.match(r"^第[一二三四五六七八九十百零]+章\b", t):
+        return 1
+    if re.match(r"^第[一二三四五六七八九十百零]+条\b", t):
+        return 2
+
+    # 3) 数字编号标题
+    if re.match(r"^\d+(\.\d+){0,3}[\s　]+", t):
+        # 例如：
+        # 1 标题
+        # 1.2 标题
+        # 1.2.3 标题
+        dot_count = t.split()[0].count(".") if " " in t else t.count(".")
+        return min(dot_count + 2, 6)
+
+    # 4) 常见短标题：如“总则”“企业文化”“报销要求”
+    # 太长的句子不要误判成标题
+    if len(t) <= 20 and not re.search(r"[。；：，,.]", t):
+        return 3
+
+    return None
+
+
+def paragraph_to_block(p: Paragraph) -> Optional[Block]:
+    text = p.text.strip()
+    if not text:
+        return None
+
+    style_name = p.style.name if p.style and p.style.name else ""
+    level = detect_heading_level(text, style_name)
+
+    if level is not None:
+        return Block(
+            type="heading",
+            text=text,
+            level=level,
+            metadata={"style_name": style_name},
+        )
+
+    # 简单识别列表
+    if re.match(r"^([\-•*]|\d+[\.、]|[一二三四五六七八九十]+、)", text):
+        return Block(
+            type="list",
+            text=text,
+            metadata={"style_name": style_name},
+        )
+
+    return Block(
+        type="paragraph",
+        text=text,
+        metadata={"style_name": style_name},
+    )
+
+
+def table_to_markdown(table: Table) -> str:
+    rows = []
+    for row in table.rows:
+        cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+        rows.append(cells)
+
+    if not rows:
+        return ""
+
+    # 去掉全空行
+    rows = [r for r in rows if any(cell for cell in r)]
+    if not rows:
+        return ""
+
+    max_cols = max(len(r) for r in rows)
+    normalized = []
+    for r in rows:
+        if len(r) < max_cols:
+            r = r + [""] * (max_cols - len(r))
+        normalized.append(r)
+
+    header = normalized[0]
+    body = normalized[1:]
+
+    md = []
+    md.append("| " + " | ".join(header) + " |")
+    md.append("| " + " | ".join(["---"] * len(header)) + " |")
+    for r in body:
+        md.append("| " + " | ".join(r) + " |")
+
+    return "\n".join(md)
+
+
+class DocxParser(BaseParser):
+    def parse(self, file_path: str) -> List[Block]:
+        doc = Document(file_path)
+        blocks: List[Block] = []
+
+        for item in iter_block_items(doc):
+            if isinstance(item, Paragraph):
+                block = paragraph_to_block(item)
+                if block:
+                    blocks.append(block)
+
+            elif isinstance(item, Table):
+                table_text = table_to_markdown(item)
+                if table_text.strip():
+                    blocks.append(
+                        Block(
+                            type="table",
+                            text=table_text,
+                        )
+                    )
+
+        return blocks

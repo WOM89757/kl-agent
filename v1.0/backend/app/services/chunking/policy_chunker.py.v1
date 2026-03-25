@@ -1,0 +1,65 @@
+from typing import List
+from app.services.chunking.models import Block, Chunk
+
+
+def policy_chunk(blocks: List[Block], max_chars: int = 1000) -> List[Chunk]:
+    chunks: List[Chunk] = []
+
+    current_heading_stack: List[str] = []
+    buffer: List[str] = []
+    current_meta = {"strategy": "policy"}
+
+    def flush():
+        nonlocal buffer
+        if not buffer:
+            return
+        text = "\n".join(buffer).strip()
+        if text:
+            chunks.append(Chunk(text=text, metadata=current_meta.copy()))
+        buffer = []
+
+    for block in blocks:
+        if block.type == "heading":
+            # 新标题来了，先把上一块结束
+            flush()
+
+            level = block.level or 1
+            if level <= len(current_heading_stack):
+                current_heading_stack[:] = current_heading_stack[:level - 1]
+            current_heading_stack.append(block.text)
+
+            current_meta = {
+                "strategy": "policy",
+                "headings": current_heading_stack.copy(),
+            }
+            buffer = current_heading_stack.copy()
+
+        elif block.type == "table":
+            # 表格单独保留
+            flush()
+            table_text = "\n".join(current_heading_stack + [block.text]).strip()
+            chunks.append(
+                Chunk(
+                    text=table_text,
+                    metadata={
+                        "strategy": "policy_table",
+                        "headings": current_heading_stack.copy(),
+                    },
+                )
+            )
+
+        else:
+            text = block.text.strip()
+            if not text:
+                continue
+
+            candidate = "\n".join(buffer + [text]).strip()
+            if len(candidate) <= max_chars:
+                buffer.append(text)
+            else:
+                flush()
+                buffer = current_heading_stack.copy()
+                buffer.append(text)
+
+    flush()
+    return chunks

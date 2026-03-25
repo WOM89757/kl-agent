@@ -1,0 +1,23 @@
+private-kb-project/
+├─ backend/
+│  ├─ app/
+│  │  ├─ main.py
+│  │  ├─ config.py
+│  │  ├─ schemas.py
+│  │  ├─ services/
+│  │  │  ├─ llm.py
+│  │  │  ├─ storage.py
+│  │  │  ├─ parser.py
+│  │  │  ├─ ingest.py
+│  │  │  ├─ retrieval.py
+│  │  │  └─ agent.py
+│  │  └─ data/
+│  │     ├─ uploads/
+│  │     ├─ chroma/
+│  │     └─ documents.json
+│  ├─ requirements.txt
+│  └─ .env.example
+├─ frontend/
+│  ├─ app.py
+│  └─ requirements.txt
+└─ README.md
